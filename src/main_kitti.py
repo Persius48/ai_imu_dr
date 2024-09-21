@@ -23,6 +23,7 @@ def launch(args):
     if args.read_data:
         args.dataset_class.read_data(args)
     dataset = args.dataset_class(args)
+    iekf_parameters = args.parameter_class(args)
 
     if args.train_filter:
         train_filter(args, dataset)
@@ -35,8 +36,11 @@ def launch(args):
 
 
 class KITTIParameters(IEKF.Parameters):
-    # gravity vector
-    g = np.array([0, 0, -9.80655])
+    # # gravity vector
+    # g = np.array([0, 0, -9.80655])
+
+    #gravity vector NED
+    # g = np.array([0, 0, 9.80655])
 
     cov_omega = 2e-4
     cov_acc = 1e-3
@@ -53,9 +57,16 @@ class KITTIParameters(IEKF.Parameters):
     cov_lat = 1
     cov_up = 10
 
-    def __init__(self, **kwargs):
+    def __init__(self, args=None, **kwargs):
         super(KITTIParameters, self).__init__(**kwargs)
         self.set_param_attr()
+        # Use the args to set gravity based on the `convert_to_NED` flag
+        if args and args.convert_to_NED:
+            # Gravity vector in NED
+            self.g = np.array([0, 0, 9.80655])
+        else:
+            # Gravity vector in ENU
+            self.g = np.array([0, 0, -9.80655])
 
     def set_param_attr(self):
         attr_list = [a for a in dir(KITTIParameters) if
@@ -119,14 +130,14 @@ class KITTIDataset(BaseDataset):
         super(KITTIDataset, self).__init__(args)
 
         self.datasets_validatation_filter['2011_09_30_drive_0028_extract'] = [11231, 53650]
-        self.datasets_train_filter["2011_10_03_drive_0042_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0018_extract"] = [0, 15000]
-        self.datasets_train_filter["2011_09_30_drive_0020_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0027_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0033_extract"] = [0, None]
-        self.datasets_train_filter["2011_10_03_drive_0027_extract"] = [0, 18000]
-        self.datasets_train_filter["2011_10_03_drive_0034_extract"] = [0, 31000]
-        self.datasets_train_filter["2011_09_30_drive_0034_extract"] = [0, None]
+        self.datasets_train_filter["2011_10_03_drive_0042_extract"] = [0, 12180]     #01
+        #self.datasets_train_filter["2011_09_30_drive_0018_extract"] = [0, 15000]    #05
+        self.datasets_train_filter["2011_09_30_drive_0020_extract"] = [0, 11347]     #06
+        self.datasets_train_filter["2011_09_30_drive_0027_extract"] = [0, 11545]     #07
+        self.datasets_train_filter["2011_09_30_drive_0033_extract"] = [0, 16589]     #09
+        #self.datasets_train_filter["2011_10_03_drive_0027_extract"] = [0, 18000]    #00
+        #self.datasets_train_filter["2011_10_03_drive_0034_extract"] = [0, 31000]    #02
+        self.datasets_train_filter["2011_09_30_drive_0034_extract"] = [0, 12744]     #10
 
         for dataset_fake in KITTIDataset.datasets_fake:
             if dataset_fake in self.datasets:
@@ -420,13 +431,14 @@ def test_filter(args, dataset):
     torch_iekf = TORCHIEKF()
 
     # put Kitti parameters
-    iekf.filter_parameters = KITTIParameters()
+    iekf.filter_parameters = KITTIParameters(args)
     iekf.set_param_attr()
-    torch_iekf.filter_parameters = KITTIParameters()
-    torch_iekf.set_param_attr()
 
-    torch_iekf.load(args, dataset)
-    iekf.set_learned_covariance(torch_iekf)
+    if not dataset.NN_OFF:
+        torch_iekf.filter_parameters = KITTIParameters(args)
+        torch_iekf.set_param_attr()
+        torch_iekf.load(args, dataset)
+        iekf.set_learned_covariance(torch_iekf)
 
     for i in range(0, len(dataset.datasets)):
         dataset_name = dataset.dataset_name(i)
@@ -435,10 +447,38 @@ def test_filter(args, dataset):
         print("Test filter on sequence: " + dataset_name)
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, i,
                                                        to_numpy=True)
+        if dataset.NED:
+            # # #convertring RPY to NED    
+            ang0 = ang_gt[0]
+            R_initial = iekf.from_rpy(ang0[0], ang0[1], ang0[2])
+            R_ne  =  np.array([[0,  1,  0],
+                               [1,  0,  0],
+                               [0,  0, -1]])
+            R_initial = R_ne.dot(R_initial)
+            ang_gt[0] = iekf.to_rpy(R_initial)
+            
+            #converting velocity to NED
+            v_gt_ned = np.zeros_like(v_gt)
+            v_gt_ned[:,0] = v_gt[:,1]
+            v_gt_ned[:,1] = v_gt[:,0]
+            v_gt_ned[:,2] = -v_gt[:,2]
+            v_gt = v_gt_ned
+
+            # converting input to FRD
+            # u[:,1] = -u[:,1]
+            # u[:,2] = -u[:,2]
+            # u[:,4] = -u[:,4]
+            # u[:,5] = -u[:,5]
+
+
         N = None
         u_t = torch.from_numpy(u).double()
-        measurements_covs = torch_iekf.forward_nets(u_t)
-        measurements_covs = measurements_covs.detach().numpy()
+        if dataset.NN_OFF:
+            sequennce_length = u_t.shape[0]
+            measurements_covs = np.tile([iekf.cov_lat, iekf.cov_up],(sequennce_length, 1))
+        else:
+            measurements_covs = torch_iekf.forward_nets(u_t)
+            measurements_covs = measurements_covs.detach().numpy()
         start_time = time.time()
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(t, u, measurements_covs,
                                                                    v_gt, p_gt, N,
@@ -455,10 +495,10 @@ def test_filter(args, dataset):
 
 
 class KITTIArgs():
-        path_data_base = "/media/mines/46230797-4d43-4860-9b76-ce35e699ea47/KITTI/raw"
-        path_data_save = "../data"
-        path_results = "../results"
-        path_temp = "../temp"
+        path_data_base =   "/home/tariqul/ai-imu-dr/RAW_OXTS_KITTI"
+        path_data_save =   "/home/tariqul/ai-imu-dr/data_prepared"         #"/home/tariqul/ai-imu-dr/experiments/data_experiments"         
+        path_results =     "/home/tariqul/ai-imu-dr/results"         #"/home/tariqul/ai-imu-dr/experiments/results_experiments"      
+        path_temp =        "/home/tariqul/ai-imu-dr/temp"         #"/home/tariqul/ai-imu-dr/experiments/temp_experiments"         
 
         epochs = 400
         seq_dim = 6000
@@ -466,13 +506,16 @@ class KITTIArgs():
         # training, cross-validation and test dataset
         cross_validation_sequences = ['2011_09_30_drive_0028_extract']
         test_sequences = ['2011_09_30_drive_0028_extract']
-        continue_training = True
+        continue_training = False
 
+        iekf_without_cnn = True
+        convert_to_NED   = False
+        
         # choose what to do
         read_data = 0
-        train_filter = 0
-        test_filter = 1
-        results_filter = 1
+        train_filter = 1
+        test_filter = 0
+        results_filter = 0
         dataset_class = KITTIDataset
         parameter_class = KITTIParameters
 

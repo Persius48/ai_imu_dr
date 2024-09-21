@@ -44,7 +44,28 @@ class MesNet(torch.nn.Module):
             self.beta_measurement = 3*torch.ones(2).double()
             self.tanh = torch.nn.Tanh()
 
+            # self.cov_net = torch.nn.Sequential(torch.nn.Conv1d(6, 32, 5),
+            #            torch.nn.ReplicationPad1d(4),
+            #            torch.nn.ReLU(),
+            #            torch.nn.Dropout(p=0.5),
+            #            torch.nn.Conv1d(32, 32, 5, dilation=3),
+            #            torch.nn.ReplicationPad1d(4),
+            #            torch.nn.ReLU(),
+            #            torch.nn.Dropout(p=0.5),
+            #            ).double()
             self.cov_net = torch.nn.Sequential(torch.nn.Conv1d(6, 32, 5),
+                       torch.nn.ReplicationPad1d(4),
+                       torch.nn.ReLU(),
+                       torch.nn.Dropout(p=0.5),
+                       torch.nn.Conv1d(32, 64, 5, dilation=3),
+                       torch.nn.ReplicationPad1d(4),
+                       torch.nn.ReLU(),
+                       torch.nn.Dropout(p=0.5),
+                       torch.nn.Conv1d(64, 128, 7, dilation=5),
+                       torch.nn.ReplicationPad1d(19),
+                       torch.nn.ReLU(),
+                       torch.nn.Dropout(p=0.5),
+                       torch.nn.Conv1d(128, 32, 5, dilation=3),
                        torch.nn.ReplicationPad1d(4),
                        torch.nn.ReLU(),
                        torch.nn.Dropout(p=0.5),
@@ -208,7 +229,31 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         return P_new
 
     def update(self, Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, u, i, measurement_cov):
+        Omega = self.skew(u[:3] - b_omega)  # skew of angular velocity
         # orientation of body frame
+        Rot_body = Rot.mm(Rot_c_i)
+        # velocity in body frame in the imu axis
+        v_imu = Rot.t().mv(v)
+        v_body = Rot_c_i.t().mv(v_imu + Omega.mv(t_c_i))   # velocity in body frame in the vehicle axis
+        # Jacobian w.r.t. car frame
+        H_v_imu = self.skew(v_imu + Omega.mv(t_c_i)) 
+        H_t_c_i = self.skew(t_c_i)
+        HH = torch.zeros((3, self.P_dim))  # HH is a 3x21 matrix
+        HH[:, 3:6] = Rot_body.t() 
+        HH[:, 9:12] =  Rot_c_i.t().mm(H_t_c_i)
+        HH[:, 15:18] = Rot_c_i.t().mm(H_v_imu)  # Jacobian of delta_imu_car_rotation_extrinsic 
+        HH[:, 18:21] = Rot_c_i.t().mm(Omega)    # Jacobian of delta__imu_car_translation_extrinsic
+        H = HH[1:] # extract the second and third rows from HH, which correspond to lateral and vertical speed components respectively.
+        r = - v_body[1:]   # r is the residual between measurement, which is just difference between a 2x1 zero vector and v_body[1:],  
+                            # v_body[1] is the lateral speed, v_body[2] is the upward speed
+        #R = np.diag(measurement_cov)
+        R = torch.diag(measurement_cov)
+        # Update the state and its covariance matrix 
+        Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up = \
+            self.state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R)
+        return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up
+
+    """         # orientation of body frame
         Rot_body = Rot.mm(Rot_c_i)
         # velocity in imu frame
         v_imu = Rot.t().mv(v)
@@ -230,13 +275,20 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
         Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up = \
             self.state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R)
-        return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up
+        return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up """
+
+    
 
 
     @staticmethod
     def state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R):
+        # print("H dtype:", H.dtype)
+        # print("P dtype:", P.dtype)
+        # print("R dtype:", R.dtype) 
+        H = H.double()
         S = H.mm(P).mm(H.t()) + R
-        Kt, _ = torch.gesv(P.mm(H.t()).t(), S)
+        Kt = torch.linalg.solve(S, P.mm(H.t()).t())
+        #Kt, _ = torch.gesv(P.mm(H.t()).t(), S)
         K = Kt.t()
         dx = K.mv(r.view(-1))
 

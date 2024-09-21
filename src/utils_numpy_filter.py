@@ -121,6 +121,14 @@ class NUMPYIEKF:
             N = u.shape[0]
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(dt, u, p_mes, v_mes,
                                        ang0, N)
+        
+        # NED = True
+        # if NED:
+        #     R_ne  =  np.array([[0,  1,  0],
+        #                        [1,  0,  0],
+        #                        [0,  0, -1]])
+            
+        #     Rot[0] = R_ne.dot(Rot[0])
 
         for i in range(1, N):
             Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \

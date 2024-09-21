@@ -48,10 +48,16 @@ class BaseDataset(Dataset):
         # number of training data points
         self.num_data = 0
 
+        #disabling neural network
+        self.NN_OFF = args.iekf_without_cnn
+
+        #NED frame enabling
+        self.NED = args.convert_to_NED
+
         # factors for normalizing inputs
         self.normalize_factors = None
         self.get_datasets()
-        self.set_normalize_factors()
+        self.set_normalize_factors() 
 
     def __getitem__(self, i):
         mondict = self.load(self.path_data_save, self.datasets[i])
