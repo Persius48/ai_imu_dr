@@ -30,11 +30,20 @@ def results_filter(args, dataset):
         u_normalized[:, [0, 3]] += 5
         u_normalized[:, [2, 5]] -= 5
 
+        if dataset.NED:
+            p_gt_ned = np.zeros_like(p_gt)
+            p_gt_ned[:,0] = p_gt[:,1]
+            p_gt_ned[:,1] = p_gt[:,0]
+            p_gt_ned[:,2] = -p_gt[:,2]
+            p_gt = p_gt_ned
+            p_gt = (p_gt - p_gt[0])
+        else:
+            p_gt = (p_gt - p_gt[0]).cpu().numpy()
+
         t = (t - t[0]).numpy()
         u = u.cpu().numpy()
         ang_gt = ang_gt.cpu().numpy()
         v_gt = v_gt.cpu().numpy()
-        p_gt = (p_gt - p_gt[0]).cpu().numpy()
         print("Total sequence time: {:.2f} s".format(t[-1]))
 
         ang = np.zeros((Rot.shape[0], 3))
