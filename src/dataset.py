@@ -54,6 +54,9 @@ class BaseDataset(Dataset):
         #NED frame enabling
         self.NED = args.convert_to_NED
 
+        #adding noise to input
+        self.add_noise_to_input = args.add_noise_to_input
+
         # factors for normalizing inputs
         self.normalize_factors = None
         self.get_datasets()
@@ -140,7 +143,18 @@ class BaseDataset(Dataset):
         u[:, :6] += w + w_b
         return u
 
-
+    def add_noise_low_cost_imu (self, u):
+        uni = torch.distributions.uniform.Uniform(-torch.ones(1), torch.ones(1))
+        imu_std = torch.Tensor([1e-3, 1e-2]).double()
+        imu_b0 = torch.Tensor([[5e-3, 5e-2], [2e-2, 5e-1]]).double()
+        noise = torch.randn_like(u)
+        noise[:, :3] = noise[:, :3] * imu_std[0]
+        noise[:, 3:6] = noise[:, 3:6] * imu_std[1]
+        b0 = uni.sample(u[0].shape)
+        b0[:3, :] = b0[:3, :] * imu_b0[0, 0] + imu_b0[1, 0]
+        b0[3:6, :] = b0[3:6, :] * imu_b0[0, 1] + imu_b0[1, 1]
+        u = u + noise + torch.t(b0)
+        return u
     @staticmethod
     def read_data(args):
         raise NotImplementedError

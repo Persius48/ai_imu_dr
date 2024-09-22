@@ -428,13 +428,14 @@ class KITTIDataset(BaseDataset):
 
 def test_filter(args, dataset):
     iekf = IEKF()
-    torch_iekf = TORCHIEKF()
+    
 
     # put Kitti parameters
     iekf.filter_parameters = KITTIParameters(args)
     iekf.set_param_attr()
 
     if not dataset.NN_OFF:
+        torch_iekf = TORCHIEKF()
         torch_iekf.filter_parameters = KITTIParameters(args)
         torch_iekf.set_param_attr()
         torch_iekf.load(args, dataset)
@@ -442,8 +443,8 @@ def test_filter(args, dataset):
 
     for i in range(0, len(dataset.datasets)):
         dataset_name = dataset.dataset_name(i)
-        if dataset_name not in dataset.odometry_benchmark.keys():
-            continue
+        # if dataset_name not in dataset.odometry_benchmark.keys():
+        #     continue
         print("Test filter on sequence: " + dataset_name)
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, i,
                                                        to_numpy=True)
@@ -473,6 +474,9 @@ def test_filter(args, dataset):
 
         N = None
         u_t = torch.from_numpy(u).double()
+        if dataset.add_noise_to_input:
+            u_t = dataset.add_noise_low_cost_imu(u_t)
+            u = torch.Tensor.numpy(u_t)
         if dataset.NN_OFF:
             sequennce_length = u_t.shape[0]
             measurements_covs = np.tile([iekf.cov_lat, iekf.cov_up],(sequennce_length, 1))
@@ -495,10 +499,10 @@ def test_filter(args, dataset):
 
 
 class KITTIArgs():
-        path_data_base =   "/home/tariqul/ai-imu-dr/RAW_OXTS_KITTI"
-        path_data_save =   "/home/tariqul/ai-imu-dr/data_prepared"         #"/home/tariqul/ai-imu-dr/experiments/data_experiments"         
-        path_results =     "/home/tariqul/ai-imu-dr/results"         #"/home/tariqul/ai-imu-dr/experiments/results_experiments"      
-        path_temp =        "/home/tariqul/ai-imu-dr/temp"         #"/home/tariqul/ai-imu-dr/experiments/temp_experiments"         
+        path_data_base =   "/home/tariqul/repos/ai-imu-dr/RAW_OXTS_KITTI"
+        path_data_save =   "/home/tariqul/repos/ai-imu-dr/experiments/data_experiments"         #"/home/tariqul/ai-imu-dr/experiments/data_experiments"         
+        path_results =     "/home/tariqul/repos/ai-imu-dr/experiments/results_experiments"        #"/home/tariqul/ai-imu-dr/experiments/results_experiments"      
+        path_temp =        "/home/tariqul/repos/ai-imu-dr/experiments/temp_experiments"        #"/home/tariqul/ai-imu-dr/experiments/temp_experiments"         
 
         epochs = 400
         seq_dim = 6000
@@ -510,12 +514,13 @@ class KITTIArgs():
 
         iekf_without_cnn = True
         convert_to_NED   = False
+        add_noise_to_input = True
         
         # choose what to do
         read_data = 0
-        train_filter = 1
-        test_filter = 0
-        results_filter = 0
+        train_filter = 0
+        test_filter = 1
+        results_filter = 1
         dataset_class = KITTIDataset
         parameter_class = KITTIParameters
 
