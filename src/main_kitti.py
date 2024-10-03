@@ -500,7 +500,7 @@ def test_filter(args, dataset):
 
 class KITTIArgs():
         path_data_base =   "/home/tariqul/repos/ai-imu-dr/RAW_OXTS_KITTI"
-        path_data_save =   "/home/tariqul/repos/ai-imu-dr/experiments/data_experiments"         #"/home/tariqul/ai-imu-dr/experiments/data_experiments"         
+        path_data_save =   "/home/tariqul/repos/ai-imu-dr/data_prepared"         #"/home/tariqul/ai-imu-dr/experiments/data_experiments"         
         path_results =     "/home/tariqul/repos/ai-imu-dr/experiments/results_experiments"        #"/home/tariqul/ai-imu-dr/experiments/results_experiments"      
         path_temp =        "/home/tariqul/repos/ai-imu-dr/experiments/temp_experiments"        #"/home/tariqul/ai-imu-dr/experiments/temp_experiments"         
 
@@ -512,15 +512,15 @@ class KITTIArgs():
         test_sequences = ['2011_09_30_drive_0028_extract']
         continue_training = False
 
-        iekf_without_cnn = True
+        iekf_without_cnn = False
         convert_to_NED   = False
-        add_noise_to_input = True
+        add_noise_to_input = False
         
         # choose what to do
         read_data = 0
-        train_filter = 0
-        test_filter = 1
-        results_filter = 1
+        train_filter = 1
+        test_filter = 0
+        results_filter = 0
         dataset_class = KITTIDataset
         parameter_class = KITTIParameters
 

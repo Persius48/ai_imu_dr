@@ -40,11 +40,14 @@ class BaseDataset(Dataset):
         """Validation dataset with index for starting/ending"""
 
         # noise added to the data
-        self.sigma_gyro = 1.e-4
-        self.sigma_acc = 1.e-4
-        self.sigma_b_gyro = 1.e-5
-        self.sigma_b_acc = 1.e-4
-
+        # self.sigma_gyro = 1.e-4
+        # self.sigma_acc = 1.e-4
+        # self.sigma_b_gyro = 1.e-5
+        # self.sigma_b_acc = 1.e-4
+        self.sigma_gyro = 1.e-3
+        self.sigma_acc = 1.e-2
+        self.sigma_b_gyro = 1.e-3
+        self.sigma_b_acc = 1.e-2
         # number of training data points
         self.num_data = 0
 

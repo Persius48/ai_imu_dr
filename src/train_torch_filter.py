@@ -233,7 +233,10 @@ def prepare_data_filter(dataset, dataset_name, Ns, iekf, seq_dim):
 
     # add noise
     if iekf.mes_net.training:
-        u = dataset.add_noise(u)
+        if dataset.add_noise_to_input:
+            u = dataset.add_noise_low_cost_imu(u)
+        else:
+            u = dataset.add_noise(u)
 
     return t, ang_gt, p_gt, v_gt, u, N0
 
