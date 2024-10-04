@@ -133,17 +133,22 @@ class CADCDataset():
                             scale = np.cos(packet.latitude * np.pi / 180.)
 
                         R, t = CADCDataset.pose_from_oxts_packet(packet, scale)
+                        R_YXZ, t = CADCDataset.pose_from_oxts_packet(packet, scale, frame= 'RFU')
 
                         if origin is None:
                             origin = t
 
                         T_w_imu = CADCDataset.transform_from_rot_trans(R, t - origin)
-
+                        T_w_imu_rfu = CADCDataset.transform_from_rot_trans(R_YXZ, t - origin)
+                        Transformdict_flu = {'frame': 'FLU', 'transformation_matrix' : T_w_imu}
+                        Transformdict_rfu = {'frame': 'RFU', 'transformation_matrix' : T_w_imu_rfu}
+                        vehicle_dict = [Transformdict_flu, Transformdict_rfu]
+                        CADCDataset.plot_vehicle_frames(vehicle_dict)
                         oxts.append(CADCDataset.NovatelRTKData(packet, T_w_imu))
             return oxts
 
     @staticmethod
-    def pose_from_oxts_packet(packet, scale):
+    def pose_from_oxts_packet(packet, scale, frame = 'FLU'):
         """Helper method to compute a SE(3) pose matrix from an OXTS packet.
         """
         er = 6378137.  # earth radius (approx.) in meters
@@ -156,17 +161,24 @@ class CADCDataset():
 
         # Use the Euler angles to get the rotation matrix
         roll_rad = np.radians(packet.roll)
-        pitch_rad = np.radians(-packet.pitch)
+        pitch_rad = np.radians(packet.pitch)
         yaw_rad = np.radians(90 -1 * packet.azimuth)
 
 
         #computed local level to body frame rotation matrix with Rx, Rx, Rz.
         #To use FLU, negative of pitch has to be taken.
-        Rx = CADCDataset.rotx(roll_rad)
-        Ry = CADCDataset.roty(pitch_rad)
-        Rz = CADCDataset.rotz(yaw_rad)
-        R = Rx.dot(Ry.dot(Rz))
-        [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
+        if frame == 'FLU':
+            Rx = CADCDataset.rotx(roll_rad)
+            Ry = CADCDataset.roty(-pitch_rad)
+            Rz = CADCDataset.rotz(yaw_rad)
+            R = Rx.dot(Ry.dot(Rz))
+            [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
+        elif frame == 'RFU':
+            Rx = CADCDataset.rotx(roll_rad)
+            Ry = CADCDataset.roty(pitch_rad)
+            Rz = CADCDataset.rotz(yaw_rad)
+            R = Ry.dot(Rx.dot(Rz))
+            [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
 
         # c_phi = math.cos(roll_rad)  
         # s_phi = math.sin(roll_rad)
@@ -185,7 +197,7 @@ class CADCDataset():
         return R, t
 
         
-        
+    #changed the rotx, roty and rotz as per novatel definition    
     @staticmethod
     def rotx(t):
         """Rotation about the x-axis."""
@@ -291,6 +303,78 @@ class CADCDataset():
             roll = np.arctan2(Rot[1, 2] * sec_pitch,  
                               Rot[2, 2] * sec_pitch)
         return roll, pitch, yaw
+    
+    def plot_vehicle_frames(vehicle_dicts):
+        # Initialize the 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Define colors for different frames
+        colors = {'FLU': ['r', 'g', 'b'], 'RFU': ['c', 'm', 'y']}
+        R_z_90 = np.array([[0, -1, 0],
+                           [1, 0, 0],
+                           [0, 0, 1]])
+        # Loop through the dictionaries
+        def is_orthogonal(R):
+            should_be_identity = np.dot(R, R.T)
+            identity = np.eye(3)
+            return np.allclose(should_be_identity, identity, atol=1e-8)
+        
+        
+        for vehicle in vehicle_dicts:
+            frame = vehicle['frame']
+            T = vehicle['transformation_matrix']
+
+            # Extract rotation (R) and translation (t)
+            R = T[0:3, 0:3]
+            t = T[0:3, 3]
+
+            # x_axis = np.array([1, 0, 0])   # Right (x-axis)
+            # y_axis = np.array([0, 1, 0])   # Forward (y-axis)
+            # z_axis = np.array([0, 0, 1])   # Up (z-axis)
+            # if frame == 'FLU': 
+            #     R = R_z_90.dot(R)
+            # Define the axes based on the vehicle's body frame
+            if frame == 'FLU': 
+                x_axis = np.array([0, 1, 0])   # Forward (x-axis)
+                y_axis = np.array([-1, 0, 0])  # Left (y-axis)
+                z_axis = np.array([0, 0, 1])   # Up (z-axis)
+            elif frame == 'RFU':
+                x_axis = np.array([1, 0, 0])   # Right (x-axis)
+                y_axis = np.array([0, 1, 0])   # Forward (y-axis)
+                z_axis = np.array([0, 0, 1])   # Up (z-axis)
+            else:
+                raise ValueError("Unsupported frame type! Use 'FLU' or 'RFU'.")
+
+            # Plot the original axes
+            if not is_orthogonal(R):
+                print("RFU rotation matrix is not orthogonal!")
+            ax.quiver(t[0], t[1], t[2], x_axis[0], x_axis[1], x_axis[2], color=colors[frame][0], linestyle='-', label=f'{frame} Forward/Right (X)')
+            ax.quiver(t[0], t[1], t[2], y_axis[0], y_axis[1], y_axis[2], color=colors[frame][1], linestyle='-', label=f'{frame} Left/Forward (Y)')
+            ax.quiver(t[0], t[1], t[2], z_axis[0], z_axis[1], z_axis[2], color=colors[frame][2], linestyle='-', label=f'{frame} Up (Z)')
+
+            # Transform the axes using the rotation matrix
+            transformed_x = R @ x_axis
+            transformed_y = R @ y_axis
+            transformed_z = R @ z_axis
+
+            # Plot the transformed axes at the translated position
+            ax.quiver(t[0], t[1], t[2], transformed_x[0], transformed_x[1], transformed_x[2], color=colors[frame][0], linestyle='--', label=f'{frame} Transformed Forward/Right (X)')
+            ax.quiver(t[0], t[1], t[2], transformed_y[0], transformed_y[1], transformed_y[2], color=colors[frame][1], linestyle='--', label=f'{frame} Transformed Left/Forward (Y)')
+            ax.quiver(t[0], t[1], t[2], transformed_z[0], transformed_z[1], transformed_z[2], color=colors[frame][2], linestyle='--', label=f'{frame} Transformed Up (Z)')
+
+        # Set labels and plot details
+        ax.set_xlim([-5, 5])
+        ax.set_ylim([-5, 5])
+        ax.set_zlim([-5, 5])
+        ax.set_xlabel('X (East)')
+        ax.set_ylabel('Y (North)')
+        ax.set_zlabel('Z (Up)')
+        plt.legend()
+        time.sleep(1)
+        plt.show()
+
+    
 
 if __name__ == '__main__':
   dataset = CADCDataset()
