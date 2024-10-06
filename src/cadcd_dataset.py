@@ -11,6 +11,8 @@ from scipy.interpolate import interp1d
 import math
 import torch
 from scipy.spatial.transform import Rotation
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class CADCDataset():
 
@@ -46,7 +48,7 @@ class CADCDataset():
                     if not os.path.isdir(path2):
                         continue
                     novatel_rtk_files = sorted(glob.glob(os.path.join(path2, 'novatel_rtk', 'data', '*.txt')))    
-                    novatel_rtk = CADCDataset.load_oxts_packets_and_poses(novatel_rtk_files)
+                    novatel_rtk = CADCDataset.load_novatel_rtk_packets_and_poses(novatel_rtk_files)
                     print("\n Sequence name : " + date_dir2)
                     if len(novatel_rtk) < CADCDataset.min_seq_dim:  #  sequence shorter than 30 s are rejected
                         cprint("Dataset is too short ({:.2f} s)".format(len(novatel_rtk) / 100), 'yellow')
@@ -74,8 +76,8 @@ class CADCDataset():
                         # convert from RFU to FLU frame and taking  east as zero yaw.Not taking negative pitch as the 
                         #Rotation matrix is calculated considering the negative pitch
                         roll_novatel_rtk[k] = np.radians(novatel_rtk_k[0].roll)
-                        pitch_novatel_rtk[k] = np.radians(-novatel_rtk_k[0].pitch)
-                        yaw_novatel_rtk[k] = np.radians(90 - 1 * novatel_rtk_k[0].azimuth) 
+                        pitch_novatel_rtk[k] = np.radians(novatel_rtk_k[0].pitch)
+                        yaw_novatel_rtk[k] = np.radians(-1 * novatel_rtk_k[0].azimuth) 
 
                         p_gt[k] = novatel_rtk_k[1][:3, 3]
                         Rot_gt_k = novatel_rtk_k[1][:3, :3]
@@ -89,7 +91,7 @@ class CADCDataset():
                     for l in range(len(t_novatel)):
                         t_novatel[l] = 3600 * t_novatel[l].hour + 60 * t_novatel[l].minute + t_novatel[l].second + t_novatel[l].microsecond / 1e6
                     print('Novatel time loaded')
-                    vel_gt = CADCDataset.interpolate_velocities(t_novatel, vel_novatel, t_novatel_rtk)
+                    v_gt_interpolated = CADCDataset.interpolate_velocities(t_novatel, vel_novatel, t_novatel_rtk)
                     print ('velocity inerpolated)')
                     t0 = t_novatel_rtk[0]
                     t = np.array(t_novatel_rtk) - t0
@@ -100,15 +102,19 @@ class CADCDataset():
                     ang_gt[:, 1] = pitch_gt
                     ang_gt[:, 2] = yaw_gt
 
+                    #imu data in RFU frame
+                    imu_rfu = CADCDataset.load_novatel_imu(path2)
+                    
                     # convert from numpy
                     t = torch.from_numpy(t)
                     p_gt = torch.from_numpy(p_gt)
-                    v_gt = torch.from_numpy(v_gt)
+                    v_gt = torch.from_numpy(v_gt_interpolated)
                     ang_gt = torch.from_numpy(ang_gt)
+                    
 
     @staticmethod
-    def load_oxts_packets_and_poses(oxts_files):
-            """Generator to read OXTS ground truth data.
+    def load_novatel_rtk_packets_and_poses(novatel_rtk_files):
+            """Generator to read ground truth data.
                Poses are given in an East-North-Up coordinate system
                whose origin is the first GPS position.
             """
@@ -117,9 +123,9 @@ class CADCDataset():
             # Origin of the global coordinate system (first GPS position)
             origin = None
 
-            oxts = []
+            novatel_rtk = []
 
-            for filename in oxts_files:
+            for filename in novatel_rtk_files:
                 with open(filename, 'r') as f:
                     for line in f.readlines():
                         line = line.split()
@@ -132,24 +138,18 @@ class CADCDataset():
                         if scale is None:
                             scale = np.cos(packet.latitude * np.pi / 180.)
 
-                        R, t = CADCDataset.pose_from_oxts_packet(packet, scale)
-                        R_YXZ, t = CADCDataset.pose_from_oxts_packet(packet, scale, frame= 'RFU')
+                        R, t = CADCDataset.pose_from_novatel_rtk_packet(packet, scale)
 
                         if origin is None:
                             origin = t
 
                         T_w_imu = CADCDataset.transform_from_rot_trans(R, t - origin)
-                        T_w_imu_rfu = CADCDataset.transform_from_rot_trans(R_YXZ, t - origin)
-                        Transformdict_flu = {'frame': 'FLU', 'transformation_matrix' : T_w_imu}
-                        Transformdict_rfu = {'frame': 'RFU', 'transformation_matrix' : T_w_imu_rfu}
-                        vehicle_dict = [Transformdict_flu, Transformdict_rfu]
-                        CADCDataset.plot_vehicle_frames(vehicle_dict)
-                        oxts.append(CADCDataset.NovatelRTKData(packet, T_w_imu))
-            return oxts
+                        novatel_rtk.append(CADCDataset.NovatelRTKData(packet, T_w_imu))
+            return novatel_rtk
 
     @staticmethod
-    def pose_from_oxts_packet(packet, scale, frame = 'FLU'):
-        """Helper method to compute a SE(3) pose matrix from an OXTS packet.
+    def pose_from_novatel_rtk_packet(packet, scale):
+        """Helper method to compute a SE(3) pose matrix from an novatel_rtk packet.
         """
         er = 6378137.  # earth radius (approx.) in meters
 
@@ -162,23 +162,18 @@ class CADCDataset():
         # Use the Euler angles to get the rotation matrix
         roll_rad = np.radians(packet.roll)
         pitch_rad = np.radians(packet.pitch)
-        yaw_rad = np.radians(90 -1 * packet.azimuth)
-
+        yaw_rad = np.radians(-1 * packet.azimuth)
+        R_z_90 = np.array([[0, -1, 0],
+                           [1, 0, 0],
+                           [0, 0, 1]])
 
         #computed local level to body frame rotation matrix with Rx, Rx, Rz.
-        #To use FLU, negative of pitch has to be taken.
-        if frame == 'FLU':
-            Rx = CADCDataset.rotx(roll_rad)
-            Ry = CADCDataset.roty(-pitch_rad)
-            Rz = CADCDataset.rotz(yaw_rad)
-            R = Rx.dot(Ry.dot(Rz))
-            [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
-        elif frame == 'RFU':
-            Rx = CADCDataset.rotx(roll_rad)
-            Ry = CADCDataset.roty(pitch_rad)
-            Rz = CADCDataset.rotz(yaw_rad)
-            R = Ry.dot(Rx.dot(Rz))
-            [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
+        # This is an extrinsic rotation
+        Rx = CADCDataset.rotx(pitch_rad)
+        Ry = CADCDataset.roty(roll_rad)
+        Rz = CADCDataset.rotz(yaw_rad)
+        R = (Ry.dot(Rx.dot(Rz)))
+        [roll, pitch, yaw] = CADCDataset.to_rpy_updated(R)
 
         # c_phi = math.cos(roll_rad)  
         # s_phi = math.sin(roll_rad)
@@ -186,14 +181,11 @@ class CADCDataset():
         # s_theta = math.sin(pitch_rad)
         # c_psi = math.cos(yaw_rad)
         # s_psi = math.sin(yaw_rad)
-
-        # local level frame to body frame transformation with XYZ convention. negative value of pitch aleardy accounted for duirng calculation
-        # local level to body frame rotation matrix in Direction Cosine form
-        # R =np.array([
-        # [c_theta * c_psi, -(s_phi * s_theta * c_psi + c_phi * s_psi), s_phi * s_psi - c_phi * s_theta * c_psi],
-        # [c_theta * s_psi, c_phi * c_psi - s_phi * s_theta * s_psi, -(c_phi * s_theta * s_psi + s_phi * c_psi)],
-        # [s_theta, s_phi * c_theta, c_phi * c_theta],
-        # ]).T
+        
+        
+        # R_alt = np.array([[c_psi * c_phi - s_psi * s_theta * s_phi, -s_psi * c_theta, c_psi * s_phi + s_psi * s_theta * c_phi],
+        #               [s_psi * c_phi + c_psi * s_theta * s_phi, c_psi * c_theta, s_psi * s_phi - c_psi * s_theta * c_phi],
+        #               [-c_theta * s_phi, s_theta, c_theta * c_phi]]).T
         return R, t
 
         
@@ -273,6 +265,27 @@ class CADCDataset():
         return np.array(velocities)
     
     @staticmethod
+    def load_novatel_imu(data_path):
+        imu_data = []
+        novatel_files = sorted(glob.glob(os.path.join(data_path, 'novatel_imu', 'data', '*.txt')))
+        for file in novatel_files:
+            with open(file, 'r') as f:
+                for line in f.readlines():
+                    data = line.split()  # Adjust this based on the delimiter (space, comma, etc.)
+                    
+                    # Assuming the format is consistent, extract the velocity fields:
+                    pitch_rate = float(data[0])*100  
+                    roll_rate = float(data[1])*100   
+                    yaw_rate = float(data[2])*100    
+                    x_accel = float(data[3])*100  
+                    y_accel = float(data[4])*100
+                    z_accel = float(data[5])*100
+    
+                    # Append to velocities list
+                    imu_data.append([pitch_rate, roll_rate, yaw_rate, x_accel, y_accel, z_accel])
+        return np.array(imu_data)
+
+    @staticmethod
     def interpolate_velocities(novatel_timestamps, velocities_novatel, rtk_timestamps):
         """
         Interpolate Novatel velocities (vn, ve, vu) to align with RTK timestamps.
@@ -288,91 +301,23 @@ class CADCDataset():
     @staticmethod
     def to_rpy_updated(Rot):
 
-        pitch = np.arctan2(-Rot[0, 2], np.sqrt(Rot[0, 0]**2 + Rot[0, 1]**2))
+        pitch = np.arctan2(Rot[1, 2], np.sqrt(Rot[1, 0]**2 + Rot[1, 1]**2))
 
         if np.isclose(pitch, np.pi / 2.):
             yaw = 0. 
-            roll = np.arctan2(Rot[1, 0], Rot[1, 1])
+            roll = np.arctan2(Rot[2, 0], -Rot[2, 1])
         elif np.isclose(pitch, -np.pi / 2.):
             yaw = 0.
-            roll = np.arctan2(-Rot[1, 0], Rot[1, 1])
+            roll = np.arctan2(Rot[2, 0], Rot[2, 1])
         else:
             sec_pitch = 1. / np.cos(pitch)
-            yaw = np.arctan2(Rot[0, 1] * sec_pitch,
-                             Rot[0, 0] * sec_pitch)
-            roll = np.arctan2(Rot[1, 2] * sec_pitch,  
+            yaw = np.arctan2(-Rot[1, 0] * sec_pitch,
+                             Rot[1, 1] * sec_pitch)
+            roll = np.arctan2(-Rot[0, 2] * sec_pitch,  
                               Rot[2, 2] * sec_pitch)
         return roll, pitch, yaw
     
-    def plot_vehicle_frames(vehicle_dicts):
-        # Initialize the 3D plot
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Define colors for different frames
-        colors = {'FLU': ['r', 'g', 'b'], 'RFU': ['c', 'm', 'y']}
-        R_z_90 = np.array([[0, -1, 0],
-                           [1, 0, 0],
-                           [0, 0, 1]])
-        # Loop through the dictionaries
-        def is_orthogonal(R):
-            should_be_identity = np.dot(R, R.T)
-            identity = np.eye(3)
-            return np.allclose(should_be_identity, identity, atol=1e-8)
-        
-        
-        for vehicle in vehicle_dicts:
-            frame = vehicle['frame']
-            T = vehicle['transformation_matrix']
-
-            # Extract rotation (R) and translation (t)
-            R = T[0:3, 0:3]
-            t = T[0:3, 3]
-
-            # x_axis = np.array([1, 0, 0])   # Right (x-axis)
-            # y_axis = np.array([0, 1, 0])   # Forward (y-axis)
-            # z_axis = np.array([0, 0, 1])   # Up (z-axis)
-            # if frame == 'FLU': 
-            #     R = R_z_90.dot(R)
-            # Define the axes based on the vehicle's body frame
-            if frame == 'FLU': 
-                x_axis = np.array([0, 1, 0])   # Forward (x-axis)
-                y_axis = np.array([-1, 0, 0])  # Left (y-axis)
-                z_axis = np.array([0, 0, 1])   # Up (z-axis)
-            elif frame == 'RFU':
-                x_axis = np.array([1, 0, 0])   # Right (x-axis)
-                y_axis = np.array([0, 1, 0])   # Forward (y-axis)
-                z_axis = np.array([0, 0, 1])   # Up (z-axis)
-            else:
-                raise ValueError("Unsupported frame type! Use 'FLU' or 'RFU'.")
-
-            # Plot the original axes
-            if not is_orthogonal(R):
-                print("RFU rotation matrix is not orthogonal!")
-            ax.quiver(t[0], t[1], t[2], x_axis[0], x_axis[1], x_axis[2], color=colors[frame][0], linestyle='-', label=f'{frame} Forward/Right (X)')
-            ax.quiver(t[0], t[1], t[2], y_axis[0], y_axis[1], y_axis[2], color=colors[frame][1], linestyle='-', label=f'{frame} Left/Forward (Y)')
-            ax.quiver(t[0], t[1], t[2], z_axis[0], z_axis[1], z_axis[2], color=colors[frame][2], linestyle='-', label=f'{frame} Up (Z)')
-
-            # Transform the axes using the rotation matrix
-            transformed_x = R @ x_axis
-            transformed_y = R @ y_axis
-            transformed_z = R @ z_axis
-
-            # Plot the transformed axes at the translated position
-            ax.quiver(t[0], t[1], t[2], transformed_x[0], transformed_x[1], transformed_x[2], color=colors[frame][0], linestyle='--', label=f'{frame} Transformed Forward/Right (X)')
-            ax.quiver(t[0], t[1], t[2], transformed_y[0], transformed_y[1], transformed_y[2], color=colors[frame][1], linestyle='--', label=f'{frame} Transformed Left/Forward (Y)')
-            ax.quiver(t[0], t[1], t[2], transformed_z[0], transformed_z[1], transformed_z[2], color=colors[frame][2], linestyle='--', label=f'{frame} Transformed Up (Z)')
-
-        # Set labels and plot details
-        ax.set_xlim([-5, 5])
-        ax.set_ylim([-5, 5])
-        ax.set_zlim([-5, 5])
-        ax.set_xlabel('X (East)')
-        ax.set_ylabel('Y (North)')
-        ax.set_zlabel('Z (Up)')
-        plt.legend()
-        time.sleep(1)
-        plt.show()
+    
 
     
 
